@@ -1413,7 +1413,10 @@ public class OneSignal {
             if (customJSON.has("u")) {
                String url = customJSON.optString("u", null);
 
-               if (!url.contains("http")) {
+               if (!url.contains("://"))
+                  url = "http://" + url;
+
+               if (!url.startsWith("http")) {
                   intent = new Intent(Intent.ACTION_MAIN, Uri.parse(url.trim()));
                   intent.addCategory(Intent.CATEGORY_LAUNCHER);
                }

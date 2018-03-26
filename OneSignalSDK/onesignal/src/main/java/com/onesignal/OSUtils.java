@@ -46,6 +46,7 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.security.MessageDigest;
 import java.util.Locale;
 import java.util.UUID;
 import java.util.regex.Pattern;
@@ -136,9 +137,16 @@ class OSUtils {
    }
 
    String getCarrierName() {
-      TelephonyManager manager = (TelephonyManager)OneSignal.appContext.getSystemService(Context.TELEPHONY_SERVICE);
-      String carrierName = manager.getNetworkOperatorName();
-      return "".equals(carrierName) ? null : carrierName;
+      try {
+         TelephonyManager manager = (TelephonyManager) OneSignal.appContext.getSystemService(Context.TELEPHONY_SERVICE);
+         // May throw even though it's not in noted in the Android docs.
+         // Issue #427
+         String carrierName = manager.getNetworkOperatorName();
+         return "".equals(carrierName) ? null : carrierName;
+      } catch(Throwable t) {
+         t.printStackTrace();
+         return null;
+      }
    }
 
    static String getManifestMeta(Context context, String metaName) {
@@ -260,5 +268,28 @@ class OSUtils {
       } catch (JSONException e) {}
       
       return null;
+   }
+
+   static String hexDigest(String str, String digestInstance) throws Throwable {
+      MessageDigest digest = java.security.MessageDigest.getInstance(digestInstance);
+      digest.update(str.getBytes("UTF-8"));
+      byte messageDigest[] = digest.digest();
+
+      StringBuilder hexString = new StringBuilder();
+      for (byte aMessageDigest : messageDigest) {
+         String h = Integer.toHexString(0xFF & aMessageDigest);
+         while (h.length() < 2)
+            h = "0" + h;
+         hexString.append(h);
+      }
+      return hexString.toString();
+   }
+
+   static void sleep(int ms) {
+      try {
+         Thread.sleep(ms);
+      } catch (InterruptedException e) {
+         e.printStackTrace();
+      }
    }
 }

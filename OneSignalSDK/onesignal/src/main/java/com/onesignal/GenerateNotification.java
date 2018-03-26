@@ -223,10 +223,13 @@ class GenerateNotification {
       notifBuilder
          .setAutoCancel(true)
          .setSmallIcon(getSmallIconId(gcmBundle))
-         .setContentTitle(getTitle(gcmBundle))
          .setStyle(new NotificationCompat.BigTextStyle().bigText(message))
          .setContentText(message)
          .setTicker(message);
+
+      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.N ||
+          !gcmBundle.optString("title").equals(""))
+         notifBuilder.setContentTitle(getTitle(gcmBundle));
       
       int notificationDefaults = 0;
       
@@ -324,18 +327,7 @@ class GenerateNotification {
          OneSignal.Log(OneSignal.LOG_LEVEL.ERROR, "Could not set background notification image!", t);
       }
 
-      if (notifJob.overrideSettings != null && notifJob.overrideSettings.extender != null) {
-         notifJob.orgFlags = notifBuilder.mNotification.flags;
-         notifJob.orgSound = notifBuilder.mNotification.sound;
-         notifBuilder.extend(notifJob.overrideSettings.extender);
-    
-         notifJob.overriddenBodyFromExtender = notifBuilder.mContentText;
-         notifJob.overriddenTitleFromExtender = notifBuilder.mContentTitle;
-         if (!notifJob.restoring) {
-            notifJob.overriddenFlags = notifBuilder.mNotification.flags;
-            notifJob.overriddenSound = notifBuilder.mNotification.sound;
-         }
-      }
+      applyNotificationExtender(notifJob, notifBuilder);
       
       // Keeps notification from playing sound + vibrating again
       if (notifJob.restoring)
@@ -379,6 +371,43 @@ class GenerateNotification {
          addXiaomiSettings(oneSignalNotificationBuilder, notification);
          NotificationManagerCompat.from(currentContext).notify(notificationId, notification);
       }
+   }
+
+   private static void applyNotificationExtender(
+           NotificationGenerationJob notifJob,
+           NotificationCompat.Builder notifBuilder) {
+      if (notifJob.overrideSettings == null || notifJob.overrideSettings.extender == null)
+         return;
+
+      try {
+         Field mNotificationField = NotificationCompat.Builder.class.getDeclaredField("mNotification");
+         mNotificationField.setAccessible(true);
+         Notification mNotification = (Notification) mNotificationField.get(notifBuilder);
+
+         notifJob.orgFlags = mNotification.flags;
+         notifJob.orgSound = mNotification.sound;
+         notifBuilder.extend(notifJob.overrideSettings.extender);
+
+         mNotification = (Notification)mNotificationField.get(notifBuilder);
+
+         Field mContentTextField = NotificationCompat.Builder.class.getDeclaredField("mContentText");
+         mContentTextField.setAccessible(true);
+         CharSequence mContentText = (CharSequence)mContentTextField.get(notifBuilder);
+
+         Field mContentTitleField = NotificationCompat.Builder.class.getDeclaredField("mContentTitle");
+         mContentTitleField.setAccessible(true);
+         CharSequence mContentTitle = (CharSequence)mContentTitleField.get(notifBuilder);
+
+         notifJob.overriddenBodyFromExtender = mContentText;
+         notifJob.overriddenTitleFromExtender = mContentTitle;
+         if (!notifJob.restoring) {
+            notifJob.overriddenFlags = mNotification.flags;
+            notifJob.overriddenSound = mNotification.sound;
+         }
+      } catch (Throwable t) {
+         t.printStackTrace();
+      }
+
    }
    
    // Removes custom sound set from the extender from non-summary notification before building it.

@@ -1,7 +1,7 @@
 /**
  * Modified MIT License
  *
- * Copyright 2017 OneSignal
+ * Copyright 2018 OneSignal
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -38,19 +38,32 @@ import android.content.Intent;
 import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.os.Build;
-import android.os.Bundle;
-import android.os.PersistableBundle;
+import android.os.Process;
 import android.service.notification.StatusBarNotification;
-import android.support.annotation.RequiresApi;
-import android.support.v4.app.NotificationManagerCompat;
-import android.support.v4.content.WakefulBroadcastReceiver;
+import android.support.annotation.WorkerThread;
 import android.text.TextUtils;
 
 import com.onesignal.OneSignalDbContract.NotificationTable;
 
 import java.util.ArrayList;
-import java.util.Random;
-import static com.onesignal.NotificationExtenderService.EXTENDER_SERVICE_JOB_ID;
+
+// Purpose:
+// Restore any notifications not interacted by the user back into the notification shade.
+// We consider "not interacted" with if it wasn't swiped away or opened by the user.
+// Android removes all the app's notifications in the following three cases.
+//   1. App was force stopped (AKA forced killed). Different than the app being swiped away.
+//   2. App is updated.
+//   3. Device is rebooted.
+// Restoring is done to ensure notifications are not missed by the user.
+//
+// Restoring cutoff:
+// Notifications received older than 7 days are not restored.
+//
+// Notes:
+// Android 8+ Oreo - Restored notifications will be generated under a "Restored" channel.
+//                   The channel has a low priority so the user is not interrupted again.
+// Android 6+ Marshmallow - We check the notification shade if the notification is already there
+//                            we skip generating it again.
 
 class NotificationRestorer {
 
@@ -69,11 +82,13 @@ class NotificationRestorer {
       new Thread(new Runnable() {
          @Override
          public void run() {
+            Thread.currentThread().setPriority(Process.THREAD_PRIORITY_BACKGROUND);
             restore(context);
          }
       }, "OS_RESTORE_NOTIFS").start();
    }
 
+   @WorkerThread
    public static void restore(Context context) {
       if (restored)
          return;
@@ -103,30 +118,15 @@ class NotificationRestorer {
          }
       }
 
+      long created_at_cutoff = (System.currentTimeMillis() / 1_000L) - 604_800L; // 1 Week back
       StringBuilder dbQuerySelection = new StringBuilder(
-              // 1 Week back.
-              NotificationTable.COLUMN_NAME_CREATED_TIME + " > " + ((System.currentTimeMillis() / 1000L) - 604800L) + " AND " +
-              NotificationTable.COLUMN_NAME_DISMISSED + " = 0 AND " +
-              NotificationTable.COLUMN_NAME_OPENED + " = 0 AND " +
-              NotificationTable.COLUMN_NAME_IS_SUMMARY + " = 0");
+        NotificationTable.COLUMN_NAME_CREATED_TIME + " > " + created_at_cutoff + " AND " +
+        NotificationTable.COLUMN_NAME_DISMISSED + " = 0 AND " +
+        NotificationTable.COLUMN_NAME_OPENED + " = 0 AND " +
+        NotificationTable.COLUMN_NAME_IS_SUMMARY + " = 0"
+      );
 
-      //retrieve the list of notifications that are currently in the shade
-      //this is used to prevent notifications from being restored twice in M and newer
-      if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-         NotificationManager notifManager = (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
-         if(notifManager != null) {
-            StatusBarNotification[] activeNotifs = notifManager.getActiveNotifications();
-            if(activeNotifs.length > 0) {
-               ArrayList<Integer> activeNotifIds = new ArrayList<>();
-               for(StatusBarNotification activeNotif : activeNotifs)
-                  activeNotifIds.add(activeNotif.getId());
-
-               dbQuerySelection.append(" AND " + NotificationTable.COLUMN_NAME_ANDROID_NOTIFICATION_ID + " NOT IN (")
-                       .append(TextUtils.join(",",activeNotifIds))
-                       .append(")");
-            }
-         }
-      }
+      skipVisibleNotifications(context, dbQuerySelection);
 
       OneSignal.Log(OneSignal.LOG_LEVEL.INFO,
               "Querying DB for notfs to restore: " + dbQuerySelection.toString());
@@ -137,14 +137,14 @@ class NotificationRestorer {
          cursor = readableDb.query(
              NotificationTable.TABLE_NAME,
              COLUMNS_FOR_RESTORE,
-                 dbQuerySelection.toString(),
-             null,
-             null,                            // group by
-             null,                            // filter by row groups
-             NotificationTable._ID + " ASC"   // sort order, old to new
+             dbQuerySelection.toString(),
+            null,
+            null,                           // group by
+            null,                            // filter by row groups
+            NotificationTable._ID + " ASC"  // sort order, old to new
          );
    
-         showNotifications(context, cursor);
+         showNotifications(context, cursor, 100);
          
       } catch (Throwable t) {
          OneSignal.Log(OneSignal.LOG_LEVEL.ERROR, "Error restoring notification records! ", t);
@@ -153,93 +153,99 @@ class NotificationRestorer {
             cursor.close();
       }
    }
-   
-   // NOTE: This can be running from a Application, Service, or JobService context.
-   static void showNotifications(Context context, Cursor cursor) {
-      if (cursor.moveToFirst()) {
-         boolean useExtender = (NotificationExtenderService.getIntent(context) != null);
-      
-         do {
-            int existingId = cursor.getInt(cursor.getColumnIndex(NotificationTable.COLUMN_NAME_ANDROID_NOTIFICATION_ID));
-            String fullData = cursor.getString(cursor.getColumnIndex(NotificationTable.COLUMN_NAME_FULL_DATA));
-            Long datetime = cursor.getLong(cursor.getColumnIndex(NotificationTable.COLUMN_NAME_CREATED_TIME));
-         
-            Intent serviceIntent;
-            if (useExtender)
-               serviceIntent = NotificationExtenderService.getIntent(context);
-            else
-               serviceIntent = new Intent().setComponent(new ComponentName(context.getPackageName(), GcmIntentService.class.getName()));
 
-            serviceIntent.putExtra("json_payload", fullData);
-            serviceIntent.putExtra("android_notif_id", existingId);
-            serviceIntent.putExtra("restoring", true);
-            serviceIntent.putExtra("timestamp", datetime);
+   // Retrieve the list of notifications that are currently in the shade
+   //    this is used to prevent notifications from being restored twice in M and newer.
+   // This is important mostly for Android O as they can't be redisplayed in a silent way unless
+   //    they are displayed under a different channel which isn't ideal.
+   // For pre-O devices this still have the benefit of being more efficient
+   private static void skipVisibleNotifications(Context context, StringBuilder dbQuerySelection) {
+      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M)
+         return;
 
-            //Using API 22 as the cutoff due to PersistableBundle#putBoolean being 22+
-            if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP_MR1) {
-               //use the job intent service...
-               if (useExtender) {
-                  NotificationExtenderService.enqueueWork(context,
-                          serviceIntent.getComponent(), EXTENDER_SERVICE_JOB_ID,
-                          serviceIntent);
-               } else {
-                  //use a job scheduler...
-                  OneSignal.Log(OneSignal.LOG_LEVEL.INFO, "scheduleRestoreNotif:" + existingId);
+      NotificationManager notifManager = (NotificationManager)context.getSystemService(Context.NOTIFICATION_SERVICE);
+      if (notifManager == null)
+         return;
 
-                  //schedule the job with the job service here...
-                  PersistableBundle restoreBundle = new PersistableBundle();
-                  restoreBundle.putString("json_payload",fullData);
-                  restoreBundle.putInt("android_notif_id", existingId);
-                  restoreBundle.putBoolean("restoring", true);
-                  restoreBundle.putLong("timestamp", datetime);
+      try {
+         StatusBarNotification[] activeNotifs = notifManager.getActiveNotifications();
+         if (activeNotifs.length == 0)
+            return;
 
-                  //set the job id to android notif id - that way we don't restore any notif twice
-                  JobInfo.Builder jobBuilder = new JobInfo.Builder(existingId,
-                          new ComponentName(context, RestoreJobService.class));
-                  JobInfo job = jobBuilder.setOverrideDeadline(0)
-                          .setExtras(restoreBundle)
-                          .build();
+         ArrayList<Integer> activeNotifIds = new ArrayList<>();
+         for (StatusBarNotification activeNotif : activeNotifs)
+            activeNotifIds.add(activeNotif.getId());
 
-                  JobScheduler jobScheduler = (JobScheduler)context.getSystemService(Context.JOB_SCHEDULER_SERVICE);
-                  jobScheduler.schedule(job);
-               }
-            }
-            else {
-               startService(context, serviceIntent);
-            }
-
-         } while (cursor.moveToNext());
+         dbQuerySelection
+                 .append(" AND " + NotificationTable.COLUMN_NAME_ANDROID_NOTIFICATION_ID + " NOT IN (")
+                 .append(TextUtils.join(",", activeNotifIds))
+                 .append(")");
+      } catch(Throwable t) {
+         // try-catch for Android 6.0.X bug work around,
+         //    getActiveNotifications sometimes throws an exception.
+         // Seem to be related to what Android's internal method getAppActiveNotifications returns.
+         // Issue #422
       }
    }
 
-   private static void startService(Context context, Intent intent) {
-      context.startService(intent);
-   }
-   
-   static void startRestoreTaskFromReceiver(Context context) {
-      if (android.os.Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-         // NotificationRestorer#restore is Code-sensitive to Android O
-         NotificationRestorer.restore(context);
-      }
-      else {
-         Intent intentForService = new Intent();
-         intentForService.setComponent(new ComponentName(context.getPackageName(),
-             NotificationRestoreService.class.getName()));
-         WakefulBroadcastReceiver.startWakefulService(context, intentForService);
-      }
+   /**
+    * Restores a set of notifications back to the notification shade based on an SQL cursor.
+    * @param context - Context required to start JobIntentService
+    * @param cursor - Source cursor to generate notifications from
+    * @param delay - Delay to slow down process to ensure we don't spike CPU and I/O on the device.
+    */
+   static void showNotifications(Context context, Cursor cursor, int delay) {
+      if (!cursor.moveToFirst())
+         return;
+
+      boolean useExtender = (NotificationExtenderService.getIntent(context) != null);
+
+      do {
+         if (useExtender) {
+            Intent intent = NotificationExtenderService.getIntent(context);
+            addRestoreExtras(intent, cursor);
+            NotificationExtenderService.enqueueWork(context,
+                  intent.getComponent(),
+                  NotificationExtenderService.EXTENDER_SERVICE_JOB_ID,
+                  intent);
+         }
+         else {
+            Intent intent = addRestoreExtras(new Intent(), cursor);
+            ComponentName componentName = new ComponentName(context, RestoreJobService.class);
+            RestoreJobService.enqueueWork(context, componentName, RestoreJobService.RESTORE_SERVICE_JOB_ID, intent);
+         }
+
+         if (delay > 0)
+            OSUtils.sleep(delay);
+      } while (cursor.moveToNext());
    }
 
+   private static Intent addRestoreExtras(Intent intent, Cursor cursor) {
+      int existingId = cursor.getInt(cursor.getColumnIndex(NotificationTable.COLUMN_NAME_ANDROID_NOTIFICATION_ID));
+      String fullData = cursor.getString(cursor.getColumnIndex(NotificationTable.COLUMN_NAME_FULL_DATA));
+      Long datetime = cursor.getLong(cursor.getColumnIndex(NotificationTable.COLUMN_NAME_CREATED_TIME));
+
+      intent.putExtra("json_payload", fullData)
+            .putExtra("android_notif_id", existingId)
+            .putExtra("restoring", true)
+            .putExtra("timestamp", datetime);
+
+      return intent;
+   }
+
+   private static final int RESTORE_NOTIFICATIONS_DELAY_MS = 15_000;
    static void startDelayedRestoreTaskFromReceiver(Context context) {
       if (android.os.Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
          // NotificationRestorer#restore is Code-sensitive to Android O
          OneSignal.Log(OneSignal.LOG_LEVEL.INFO, "scheduleRestoreKickoffJob");
 
-         //set the job id to android notif id - that way we don't restore any notif twice
+         // set the job id to android notif id - that way we don't restore any notif twice
          JobInfo.Builder jobBuilder = new JobInfo.Builder(RESTORE_KICKOFF_REQUEST_CODE,
                  new ComponentName(context, RestoreKickoffJobService.class));
-         JobInfo job = jobBuilder.setOverrideDeadline(15*1000)
-                 .setMinimumLatency(15*1000)
-                 .build();
+         JobInfo job = jobBuilder
+               .setOverrideDeadline(RESTORE_NOTIFICATIONS_DELAY_MS)
+               .setMinimumLatency(RESTORE_NOTIFICATIONS_DELAY_MS)
+               .build();
          JobScheduler jobScheduler = (JobScheduler)context.getSystemService(Context.JOB_SCHEDULER_SERVICE);
          jobScheduler.schedule(job);
       }
@@ -253,9 +259,9 @@ class NotificationRestorer {
          PendingIntent pendingIntent = PendingIntent.getService(context,
                  RESTORE_KICKOFF_REQUEST_CODE, intentForService, PendingIntent.FLAG_CANCEL_CURRENT);
 
-         long scheduleTime = System.currentTimeMillis()+(15*1000);
+         long scheduleTime = System.currentTimeMillis() + RESTORE_NOTIFICATIONS_DELAY_MS;
          AlarmManager alarm = (AlarmManager)context.getSystemService(Context.ALARM_SERVICE);
-         alarm.set(AlarmManager.RTC_WAKEUP, scheduleTime, pendingIntent);
+         alarm.set(AlarmManager.RTC, scheduleTime, pendingIntent);
       }
    }
 }

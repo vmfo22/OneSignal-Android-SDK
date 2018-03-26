@@ -37,7 +37,7 @@ import com.onesignal.OneSignal.GetTagsHandler;
 import com.onesignal.OneSignal.IdsAvailableHandler;
 import com.onesignal.OneSignal.PostNotificationResponseHandler;
 
-public class OneSignalUnityProxy implements NotificationOpenedHandler, NotificationReceivedHandler, OSPermissionObserver, OSSubscriptionObserver {
+public class OneSignalUnityProxy implements NotificationOpenedHandler, NotificationReceivedHandler, OSPermissionObserver, OSSubscriptionObserver, OSEmailSubscriptionObserver {
 
    private static String unityListenerName;
    private static java.lang.reflect.Method unitySendMessage;
@@ -80,6 +80,34 @@ public class OneSignalUnityProxy implements NotificationOpenedHandler, Notificat
 
    public void sendTags(String json) {
       OneSignal.sendTags(json);
+   }
+
+   public void setEmail(String email, String authHash) {
+      OneSignal.setEmail(email, authHash, new OneSignal.EmailUpdateHandler() {
+         @Override
+         public void onSuccess() {
+            unitySafeInvoke("onSetEmailSuccess", "{\"status\": \"success\"}");
+         }
+
+         @Override
+         public void onFailure(OneSignal.EmailUpdateError error) {
+            unitySafeInvoke("onSetEmailFailure", "{\"error\": \"" + error.getMessage() + "\"}");
+         }
+      });
+   }
+
+   public void logoutEmail() {
+      OneSignal.logoutEmail(new OneSignal.EmailUpdateHandler() {
+         @Override
+         public void onSuccess() {
+            unitySafeInvoke("onLogoutEmailSuccess", "{\"status\": \"success\"}");
+         }
+
+         @Override
+         public void onFailure(OneSignal.EmailUpdateError error) {
+            unitySafeInvoke("onLogoutEmailFailure", "{\"error\": \"" + error.getMessage() + "\"}");
+         }
+      });
    }
 
    public void getTags() {
@@ -128,7 +156,7 @@ public class OneSignalUnityProxy implements NotificationOpenedHandler, Notificat
 
    public void enableVibrate(boolean enable) { OneSignal.enableVibrate(enable); }
 
-   void setInFocusDisplaying(int displayOption) { OneSignal.setInFocusDisplaying(displayOption); }
+   public void setInFocusDisplaying(int displayOption) { OneSignal.setInFocusDisplaying(displayOption); }
 
    public void setSubscription(boolean enable) { OneSignal.setSubscription(enable); }
 
@@ -177,6 +205,10 @@ public class OneSignalUnityProxy implements NotificationOpenedHandler, Notificat
    public void removeSubscriptionObserver() {
       OneSignal.removeSubscriptionObserver(this);
    }
+
+   public void addEmailSubscriptionObserver() { OneSignal.addEmailSubscriptionObserver(this); }
+
+   public void removeEmailSubscriptionObserver() { OneSignal.removeEmailSubscriptionObserver(this); }
    
    public String getPermissionSubscriptionState() {
       return OneSignal.getPermissionSubscriptionState().toJSONObject().toString();
@@ -190,6 +222,11 @@ public class OneSignalUnityProxy implements NotificationOpenedHandler, Notificat
    @Override
    public void onOSSubscriptionChanged(OSSubscriptionStateChanges stateChanges) {
       unitySafeInvoke("onOSSubscriptionChanged", stateChanges.toJSONObject().toString());
+   }
+
+   @Override
+   public void onOSEmailSubscriptionChanged(OSEmailSubscriptionStateChanges stateChanges) {
+      unitySafeInvoke("onOSEmailSubscriptionChanged", stateChanges.toJSONObject().toString());
    }
    
    private static void unitySafeInvoke(String method, String params) {

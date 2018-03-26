@@ -1,7 +1,7 @@
 /**
  * Modified MIT License
  * 
- * Copyright 2017 OneSignal
+ * Copyright 2018 OneSignal
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -33,8 +33,6 @@ import org.json.JSONObject;
 
 import com.onesignal.OneSignalDbContract.NotificationTable;
 
-import android.app.AlarmManager;
-import android.app.PendingIntent;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
@@ -44,7 +42,6 @@ import android.os.Build;
 import android.os.Bundle;
 
 import java.util.ArrayList;
-import java.util.Random;
 import java.util.Set;
 import static com.onesignal.NotificationExtenderService.EXTENDER_SERVICE_JOB_ID;
 
@@ -76,28 +73,26 @@ class NotificationBundleProcessor {
          
          notifJob.overrideSettings = overrideSettings;
          ProcessJobForDisplay(notifJob);
+
+         // Delay to prevent CPU spikes.
+         //    Normally more than one notification is restored at a time.
+         if (notifJob.restoring)
+            OSUtils.sleep(100);
       } catch (JSONException e) {
          e.printStackTrace();
       }
-   }
-
-   /**
-    * Android O - Process the restoration of notifications from a JobService
-    * This branch of logic differs from pre-O in that it is not coming through the GcmIntentService
-    * and doesn't accommodate the developer's NotificationExtenderService. This is preferred to otherwise
-    * not getting any notifications restored on Oreo at all.
-    * @param context
-    * @param bundle
-    */
-   static void ProcessFromRestorerJobService(Context context, BundleCompat bundle) {
-      ProcessFromGCMIntentService(context, bundle, null); // re-use the GCM method
    }
 
    static int ProcessJobForDisplay(NotificationGenerationJob notifJob) {
       notifJob.showAsAlert = OneSignal.getInAppAlertNotificationEnabled() && OneSignal.isAppActive();
       processCollapseKey(notifJob);
 
-      if (shouldDisplay(notifJob.jsonPayload.optString("alert")))
+      boolean doDisplay =
+         notifJob.hasExtender()
+         || shouldDisplay(notifJob.jsonPayload.optString("alert"));
+
+
+      if (doDisplay)
          GenerateNotification.fromJsonPayload(notifJob);
 
       if (!notifJob.restoring) {
@@ -200,6 +195,40 @@ class NotificationBundleProcessor {
          }
       } catch (JSONException e) {
          e.printStackTrace();
+      }
+   }
+
+   static void markRestoredNotificationAsDismissed(NotificationGenerationJob notifiJob) {
+      if (notifiJob.getAndroidIdWithoutCreate() == -1)
+         return;
+
+      String whereStr = NotificationTable.COLUMN_NAME_ANDROID_NOTIFICATION_ID + " = " + notifiJob.getAndroidIdWithoutCreate();
+
+      OneSignalDbHelper dbHelper = OneSignalDbHelper.getInstance(notifiJob.context);
+      SQLiteDatabase writableDb = null;
+
+      try {
+         writableDb = dbHelper.getWritableDbWithRetries();
+         writableDb.beginTransaction();
+
+         ContentValues values = new ContentValues();
+         values.put(NotificationTable.COLUMN_NAME_DISMISSED, 1);
+
+         writableDb.update(NotificationTable.TABLE_NAME, values, whereStr, null);
+         BadgeCountUpdater.update(writableDb, notifiJob.context);
+
+         writableDb.setTransactionSuccessful();
+
+      } catch (Exception e) {
+         OneSignal.Log(OneSignal.LOG_LEVEL.ERROR, "Error saving notification record! ", e);
+      } finally {
+         if (writableDb != null) {
+            try {
+               writableDb.endTransaction(); // May throw if transaction was never opened or DB is full.
+            } catch (Throwable t) {
+               OneSignal.Log(OneSignal.LOG_LEVEL.ERROR, "Error closing transaction! ", t);
+            }
+         }
       }
    }
 

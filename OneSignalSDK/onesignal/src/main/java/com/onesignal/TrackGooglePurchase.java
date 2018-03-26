@@ -37,14 +37,10 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-import com.onesignal.OneSignal;
-import com.onesignal.OneSignal.IdsAvailableHandler;
-
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
 import android.content.ServiceConnection;
-import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.os.Bundle;
 import android.os.IBinder;
@@ -235,7 +231,8 @@ class TrackGooglePurchase {
 
                      OneSignalPrefs.saveString(OneSignalPrefs.PREFS_PLAYER_PURCHASES,
                              OneSignalPrefs.PREFS_PURCHASE_TOKENS, purchaseTokens.toString());
-                     OneSignalPrefs.remove(OneSignalPrefs.PREFS_PLAYER_PURCHASES, OneSignalPrefs.PREFS_EXISTING_PURCHASES);
+                     OneSignalPrefs.saveBool(OneSignalPrefs.PREFS_PLAYER_PURCHASES,
+                              OneSignalPrefs.PREFS_EXISTING_PURCHASES, true);
 
                      newAsExisting = false;
                      isWaitingForPurchasesRequest = false;

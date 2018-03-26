@@ -1,7 +1,7 @@
 /**
  * Modified MIT License
  *
- * Copyright 2016 OneSignal
+ * Copyright 2018 OneSignal
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -36,7 +36,6 @@ import com.onesignal.ShadowGoogleCloudMessaging;
 import com.onesignal.ShadowGooglePlayServicesUtil;
 import com.onesignal.example.BlankActivity;
 
-import org.junit.Assert;
 import org.junit.Before;
 import org.junit.BeforeClass;
 import org.junit.Test;
@@ -45,6 +44,8 @@ import org.robolectric.Robolectric;
 import org.robolectric.RobolectricTestRunner;
 import org.robolectric.annotation.Config;
 import org.robolectric.shadows.ShadowLog;
+
+import static junit.framework.Assert.assertTrue;
 
 @Config(packageName = "com.onesignal.example",
       constants = BuildConfig.class,
@@ -60,6 +61,7 @@ public class PushRegistratorRunner {
    @BeforeClass // Runs only once, before any tests
    public static void setUpClass() throws Exception {
       ShadowLog.stream = System.out;
+      TestHelpers.beforeTestSuite();
    }
 
    @Before // Before each test
@@ -77,14 +79,13 @@ public class PushRegistratorRunner {
       pushReg.registerForPush(blankActivity, "", new PushRegistrator.RegisteredHandler() {
          @Override
          public void complete(String id, int status) {
-            System.out.println("HERE: " + id);
             callbackFired = true;
             testThread.interrupt();
          }
       });
       try {Thread.sleep(5000);} catch (Throwable t) {}
 
-      Assert.assertTrue(callbackFired);
+      assertTrue(callbackFired);
    }
 
    @Test
@@ -97,13 +98,12 @@ public class PushRegistratorRunner {
       pushReg.registerForPush(blankActivity, "", new PushRegistrator.RegisteredHandler() {
          @Override
          public void complete(String id, int status) {
-            System.out.println("HERE: " + id);
             callbackFired = true;
             testThread.interrupt();
          }
       });
       try {Thread.sleep(5000);} catch (Throwable t) {}
 
-      Assert.assertTrue(callbackFired);
+      assertTrue(callbackFired);
    }
 }

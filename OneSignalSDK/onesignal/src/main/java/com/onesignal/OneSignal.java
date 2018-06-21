@@ -1631,12 +1631,12 @@ public class OneSignal {
                context.startActivity(intent);
                urlOpened = true;
             }
-         } catch (RuntimeException exp) {
+         } /*catch (RuntimeException exp) {
             Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url.trim()));
             intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_WHEN_TASK_RESET |Intent.FLAG_ACTIVITY_MULTIPLE_TASK |Intent.FLAG_ACTIVITY_NEW_TASK);
             context.startActivity(intent);
             urlOpened = true;
-         } catch (Throwable t) {
+         }*/ catch (Throwable t) {
             Log(LOG_LEVEL.ERROR, "Error parsing JSON item " + i + "/" + jsonArraySize + " for launching a web URL.", t);
          }
       }

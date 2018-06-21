@@ -1627,7 +1627,7 @@ public class OneSignal {
                   url = "http://" + url;
 
                Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url.trim()));
-               intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_WHEN_TASK_RESET |Intent.FLAG_ACTIVITY_MULTIPLE_TASK);
+               intent.addFlags(Intent.FLAG_ACTIVITY_CLEAR_WHEN_TASK_RESET |Intent.FLAG_ACTIVITY_MULTIPLE_TASK |Intent.FLAG_ACTIVITY_NEW_TASK);
                context.startActivity(intent);
                urlOpened = true;
             }
